@@ -1,0 +1,54 @@
+name: Test basic generate files provenance
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/tags/v1.0.0
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create test artifact
+        run: |
+          mkdir -p /tmp/test-artifacts
+          echo "hello slsa world" > /tmp/test-artifacts/hello.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifacts
+            --output-path /tmp/provenance.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking for provenance file at /tmp/provenance.json"
+          if [ ! -f "/tmp/provenance.json" ]; then
+            echo "FAIL: provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Validating provenance JSON content"
+          if ! python3 -m json.tool /tmp/provenance.json > /dev/null 2>&1; then
+            echo "FAIL: provenance.json is not valid JSON"
+            cat /tmp/provenance.json
+            exit 1
+          fi
+          echo "PASS: provenance.json is valid JSON"
+
+      - name: Assert provenance contains expected fields
+        run: |
+          echo "Checking provenance content"
+          cat /tmp/provenance.json
+          if ! grep -q "subject" /tmp/provenance.json; then
+            echo "FAIL: provenance.json does not contain 'subject' field"
+            exit 1
+          fi
+          echo "PASS: provenance.json contains expected SLSA fields"

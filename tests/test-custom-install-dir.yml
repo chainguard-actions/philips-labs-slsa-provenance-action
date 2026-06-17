@@ -1,0 +1,56 @@
+name: Test custom install directory
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/tags/v2.0.0
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create test artifact
+        run: |
+          mkdir -p /tmp/custom-dir-artifacts
+          echo "custom install dir test artifact" > /tmp/custom-dir-artifacts/artifact.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          install-dir: /tmp/my-slsa-provenance
+          arguments: >-
+            --artifact-path /tmp/custom-dir-artifacts
+            --output-path /tmp/custom-provenance.json
+
+      - name: Assert binary was installed in custom directory
+        run: |
+          echo "Checking for binary at /tmp/my-slsa-provenance/slsa-provenance"
+          if [ ! -f "/tmp/my-slsa-provenance/slsa-provenance" ]; then
+            echo "FAIL: slsa-provenance binary not found in custom install dir"
+            ls -la /tmp/my-slsa-provenance/ || echo "(directory does not exist)"
+            exit 1
+          fi
+          echo "PASS: binary found in custom install directory"
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking for provenance file at /tmp/custom-provenance.json"
+          if [ ! -f "/tmp/custom-provenance.json" ]; then
+            echo "FAIL: custom-provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: custom-provenance.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Validating provenance JSON content"
+          if ! python3 -m json.tool /tmp/custom-provenance.json > /dev/null 2>&1; then
+            echo "FAIL: custom-provenance.json is not valid JSON"
+            cat /tmp/custom-provenance.json
+            exit 1
+          fi
+          echo "PASS: custom-provenance.json is valid JSON"
+          cat /tmp/custom-provenance.json
