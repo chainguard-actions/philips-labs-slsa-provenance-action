@@ -1,0 +1,77 @@
+name: Create a provenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      ingredient_input:
+        description: 'Ingredient to input in the artifact text file'
+        required: false
+      car_input:
+        description: 'Car to input in the artifact text file'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build artifact
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: read
+    steps:
+      # traditionally you would build your code here and generate an artifact
+      - name: Create first artifact
+        run:  echo "onion, tomato, jalapeno, cilantro, lime, salt" > salsa.txt
+
+      - name: Create second artifact
+        run:  echo "audi, tesla, bmw" > cars.txt
+
+      - name: Input workflow ingredient
+        if:  ${{ github.event.inputs.ingredient_input != '' }}
+        env:
+          INGREDIENT_INPUT: ${{ github.event.inputs.ingredient_input }}
+        run: |
+          echo ", $INGREDIENT_INPUT" >> salsa.txt
+
+      - name: Input workflow cars
+        if:  ${{ github.event.inputs.car_input != '' }}
+        env:
+          CAR_INPUT: ${{ github.event.inputs.car_input }}
+        run: |
+          echo ", $CAR_INPUT" >> cars.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2
+        with:
+          path: '*.txt'
+
+  generate-provenance:
+    needs: build
+    name: Generate build provenance
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: read
+    steps:
+      # checkout only required to run local action (defined in this repo)
+      - name: Checkout
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579 # v2.4.0
+
+      - name: Download build artifact
+        uses: actions/download-artifact@cbed621e49e4c01b044d60f6c80ea4ed6328b281 # v2
+
+      - name: Generate some extra materials (this usually happens as part of the build process)
+        run: |
+          echo '[{"uri": "pkg:deb/debian/stunnel4@5.50-3?arch=amd64", "digest": {"sha256": "e1731ae217fcbc64d4c00d707dcead45c828c5f762bcf8cc56d87de511e096fa"}}]' > extra-materials.json
+
+      - name: Generate provenance
+        # use action in the root directory
+        uses: ./
+        with:
+          artifact_path: artifact/
+          extra_materials: extra-materials.json
+
+      - name: Upload provenance
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2
+        with:
+          path: provenance.json

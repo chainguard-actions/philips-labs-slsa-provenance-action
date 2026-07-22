@@ -1,0 +1,286 @@
+name: Continuous integration
+
+on:
+  push:
+  pull_request:
+    types: [ opened, reopened ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@bfdd3570ce990073878bf10f6b2d79082de49492 # v2.2.0
+        with:
+          go-version: 1.17
+          check-latest: true
+
+      - name: Checkout
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579 # v2.4.0
+
+      - name: Cache Go modules
+        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed # v2.1.7
+        id: go-mod-cache
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Get dependencies
+        run: make download
+
+      - name: Lint
+        run: |
+          result="$(make  lint)"
+          echo "$result"
+          [ -n "$(echo "$result" | grep 'diff -u')" ] && exit 1 || exit 0
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: make test-race
+
+      - name: Coverage
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: make coverage-out
+
+      - name: Upload Code Coverage
+        uses: codecov/codecov-action@f32b3a3741e1053eb607407145bc9619351dc93b # v2.1.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: true
+          verbose: true
+
+  release:
+    name: release
+    needs: [build]
+    outputs:
+      container_digest: ${{ steps.container_info.outputs.container_digest }}
+      container_tags: ${{ steps.container_info.outputs.container_tags }}
+      container_repos: ${{ steps.container_info.outputs.container_repos }}
+
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@bfdd3570ce990073878bf10f6b2d79082de49492 # v2.2.0
+        with:
+          go-version: 1.17
+          check-latest: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d572c9c13673d2e0a26fabf90b5748f36886883f # v2.0.0
+        with:
+          cosign-release: 'v1.5.1'
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@3626d7d7b13e87ee6c6f9ded3940dea05a3967bc # v0.6.0
+
+      - name: Checkout
+        uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579 # v2.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Login to Container registries
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login -u philipssoftware --password-stdin
+          echo "$GITHUB_TOKEN" | docker login -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+      - name: Set release variables
+        id: release-vars
+        run: |
+          make release-vars > /tmp/spiffe-vault-release-vars.env
+          source /tmp/spiffe-vault-release-vars.env
+          if [[ -n "$LDFLAGS" ]]; then
+            echo "::set-output name=LDFLAGS::$LDFLAGS"
+          fi
+          if [[ -n "$GIT_HASH" ]]; then
+            echo "::set-output name=GIT_HASH::$GIT_HASH"
+          fi
+          rm -f /tmp/spiffe-vault-release-vars.env
+
+      - name: Install signing key
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
+
+      - name: Release ${{ (!startsWith(github.ref, 'refs/tags/') && 'snapshot') || '' }}
+        uses: goreleaser/goreleaser-action@b953231f81b8dfd023c58e0854a721e35037f28b # v2
+        with:
+          version: latest
+          args: release --rm-dist ${{ (!startsWith(github.ref, 'refs/tags/') && '--snapshot') || '' }} ${{ ((startsWith(github.ref, 'refs/tags/') && endsWith(github.ref, '-draft')) && '-f .goreleaser.draft.yml') || '' }}
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          LDFLAGS: ${{ steps.release-vars.outputs.LDFLAGS }}
+          GIT_HASH: ${{ steps.release-vars.outputs.GIT_HASH }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+
+      - name: Get container info
+        id: container_info
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          export CONTAINER_DIGEST=$(make container-digest GITHUB_REF="$GITHUB_REF_NAME")
+          echo "::set-output name=container_digest::$CONTAINER_DIGEST"
+          echo "::set-output name=container_tags::$(make container-tags CONTAINER_DIGEST="${CONTAINER_DIGEST}" | paste -s -d ',' -)"
+          echo "::set-output name=container_repos::$(make container-repos CONTAINER_DIGEST="${CONTAINER_DIGEST}" | jq --raw-input . | jq --slurp -c)"
+
+      - name: Logout from Container registries
+        if: ${{ always() }}
+        run: |
+          docker logout
+          docker logout ghcr.io
+
+      - name: Cleanup signing keys
+        if: ${{ always() }}
+        run: rm -f cosign.key
+
+  sbom:
+    name: sbom
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAGS: "${{ needs.release.outputs.container_tags }}"
+
+    strategy:
+      matrix:
+        repo: ${{ fromJSON(needs.release.outputs.container_repos) }}
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d572c9c13673d2e0a26fabf90b5748f36886883f # v2.0.0
+        with:
+          cosign-release: 'v1.5.1'
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@3626d7d7b13e87ee6c6f9ded3940dea05a3967bc # v0.6.0
+
+      - name: Login to Container registries
+        env:
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login -u philipssoftware --password-stdin
+          echo "$GITHUB_TOKEN" | docker login -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+      - name: Attach SBOM
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          MATRIX_REPO: ${{ matrix.repo }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
+          IFS=,
+          for t in "${TAGS}"; do
+            cosign verify --key cosign.pub "$MATRIX_REPO:${t}"
+            syft "$MATRIX_REPO:${t}" -o spdx-json > sbom-spdx.json
+            cosign attest --predicate sbom-spdx.json --type spdx --key cosign.key "$MATRIX_REPO:${t}"
+            cosign verify-attestation -o verified-sbom-spdx.json --key cosign.pub "$MATRIX_REPO:${t}"
+          done
+
+      - name: Clean up & Logout from Container registries
+        if: ${{ always() }}
+        run: |
+          docker logout
+          docker logout ghcr.io
+          rm -f cosign.key
+
+  container-provenance:
+    name: container-provenance
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        repo: ${{ fromJSON(needs.release.outputs.container_repos) }}
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d572c9c13673d2e0a26fabf90b5748f36886883f # v2.0.0
+        with:
+          cosign-release: 'v1.5.1'
+
+      - name: Generate provenance for ${{ matrix.repo }}
+        uses: philips-labs/slsa-provenance-action@e74791624fd0e19c65e22876545d7b73d594bcbb # main (v0.8.1-draft not found)
+        with:
+          command: generate
+          subcommand: container
+          arguments: --repository ${{ matrix.repo }} --output-path provenance.att --digest ${{ needs.release.outputs.container_digest }} --tags ${{ needs.release.outputs.container_tags }}
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Get slsa-provenance predicate
+        run: |
+          cat provenance.att | jq .predicate > provenance-predicate.att
+
+      - name: Login to Container registries
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login -u philipssoftware --password-stdin
+          echo "$GITHUB_TOKEN" | docker login -u "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+      - name: Attach provenance to image
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          MATRIX_REPO: ${{ matrix.repo }}
+          CONTAINER_DIGEST: ${{ needs.release.outputs.container_digest }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
+          cosign attest --predicate provenance-predicate.att --type slsaprovenance --key cosign.key "$MATRIX_REPO@$CONTAINER_DIGEST"
+
+      - name: Verify attestation
+        env:
+          MATRIX_REPO: ${{ matrix.repo }}
+          CONTAINER_DIGEST: ${{ needs.release.outputs.container_digest }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          cosign verify-attestation --key cosign.pub "$MATRIX_REPO@$CONTAINER_DIGEST"
+
+      - name: Logout from Container registries
+        if: ${{ always() }}
+        run: |
+          docker logout
+          docker logout ghcr.io
+          rm -f cosign.key

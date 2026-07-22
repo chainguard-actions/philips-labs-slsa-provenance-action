@@ -1,0 +1,85 @@
+name: 'SLSA Build Provenance Action'
+description: 'An action to generate SLSA build provenance for an artifact'
+branding:
+  icon: lock
+  color: purple
+inputs:
+  command:
+    description: 'The command to use (available options: generate)'
+    required: false
+    default: 'generate'
+  subcommand:
+    description: 'The subcommand to use when generating provenance'
+    required: false
+    default: 'files'
+  github_context:
+    description: 'internal (do not set): the "github" context object in json'
+    required: true
+    default: ${{ toJSON(github) }}
+  runner_context:
+    description: 'internal (do not set): the "runner" context object in json'
+    required: true
+    default: ${{ toJSON(runner) }}
+  arguments:
+    description: 'commandline options for the given subcommand'
+    required: true
+  install-dir:
+    description: 'Where to install the slsa-provenance binary'
+    required: false
+    default: '$HOME/.slsa-provenance'
+runs:
+  using: 'composite'
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: install binary
+      shell: bash
+      run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
+      env:
+        INSTALL_PATH: ${{ inputs.install-dir }}
+    - name: compose arguments
+      id: compose-args
+      shell: bash
+      run: |
+        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
+
+        args=("$INPUT_COMMAND")
+        args+=("$INPUT_SUBCOMMAND")
+        args+=(--github-context)
+        args+=("${encoded_github}")
+        args+=(--runner-context)
+        args+=("${encoded_runner}")
+        args+=("$INPUT_ARGUMENTS")
+
+        safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"
+        echo "provenance_args=${safe_args}" >> "$GITHUB_OUTPUT"
+      env:
+        GITHUB_CONTEXT: ${{ inputs.github_context }}
+        RUNNER_CONTEXT: ${{ inputs.runner_context }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_SUBCOMMAND: ${{ inputs.subcommand }}
+        INPUT_ARGUMENTS: ${{ inputs.arguments }}
+    - name: Generate provenance
+      shell: bash
+      run: |
+        read -ra provenance_args <<< "$PROVENANCE_ARGS"
+        "$INSTALL_PATH/slsa-provenance" "${provenance_args[@]}"
+      env:
+        INSTALL_PATH: ${{ inputs.install-dir }}
+        PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}

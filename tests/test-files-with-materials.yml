@@ -1,0 +1,68 @@
+name: Test file provenance with extra materials
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create test artifact and materials file
+        run: |
+          echo "artifact with materials" > /tmp/test-artifact-materials.txt
+          cat > /tmp/materials.json << 'EOF'
+          [
+            {
+              "uri": "pkg:deb/debian/stunnel4@5.50-3?arch=amd64",
+              "digest": {
+                "sha256": "e1731ae217fcbc64d4c00d707dcead45c828c5f762bcf8cc56d87de511e096fa"
+              }
+            }
+          ]
+          EOF
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifact-materials.txt
+            --output-path /tmp/provenance-materials.json
+            --extra-materials /tmp/materials.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance-materials.json ]; then
+            echo "FAIL: provenance-materials.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Checking provenance file is valid JSON..."
+          if ! python3 -m json.tool /tmp/provenance-materials.json > /dev/null 2>&1; then
+            echo "FAIL: provenance-materials.json is not valid JSON"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json is valid JSON"
+
+      - name: Assert provenance contains materials
+        run: |
+          echo "Checking provenance contains materials..."
+          MATERIALS=$(python3 -c "
+          import json, sys
+          d = json.load(open('/tmp/provenance-materials.json'))
+          mats = d.get('predicate', {}).get('materials', [])
+          print(len(mats))
+          " 2>/dev/null || echo "0")
+          echo "materials count: $MATERIALS"
+          if [ "$MATERIALS" -lt 1 ]; then
+            echo "FAIL: expected at least 1 material in provenance"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance contains materials"

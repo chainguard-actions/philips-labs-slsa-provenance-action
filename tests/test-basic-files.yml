@@ -1,0 +1,55 @@
+name: Test basic file provenance generation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create test artifact
+        run: |
+          echo "hello world" > /tmp/test-artifact.txt
+          sha256sum /tmp/test-artifact.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifact.txt
+            --output-path /tmp/provenance.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance.json ]; then
+            echo "FAIL: provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Checking provenance file is valid JSON..."
+          if ! python3 -m json.tool /tmp/provenance.json > /dev/null 2>&1; then
+            echo "FAIL: provenance.json is not valid JSON"
+            cat /tmp/provenance.json
+            exit 1
+          fi
+          echo "PASS: provenance.json is valid JSON"
+
+      - name: Assert provenance contains expected fields
+        run: |
+          echo "Checking provenance contains expected SLSA fields..."
+          BUILDER_ID=$(python3 -c "import json,sys; d=json.load(open('/tmp/provenance.json')); print(d.get('predicate',{}).get('builder',{}).get('id',''))" 2>/dev/null || echo "")
+          echo "builder id: $BUILDER_ID"
+          PRED_TYPE=$(python3 -c "import json,sys; d=json.load(open('/tmp/provenance.json')); print(d.get('predicateType',''))" 2>/dev/null || echo "")
+          echo "predicateType: $PRED_TYPE"
+          if [ -z "$PRED_TYPE" ]; then
+            echo "FAIL: predicateType is empty"
+            cat /tmp/provenance.json
+            exit 1
+          fi
+          echo "PASS: provenance contains predicateType"
