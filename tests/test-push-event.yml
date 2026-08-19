@@ -1,0 +1,57 @@
+name: Test provenance generation on push event
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+      GITHUB_SHA: abc1234567890abcdef1234567890abcdef12345
+      GITHUB_REPOSITORY: test-owner/test-repo
+      GITHUB_SERVER_URL: https://github.com
+      GITHUB_RUN_ID: "12345"
+      GITHUB_RUN_NUMBER: "1"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create artifact files for provenance
+        run: |
+          mkdir -p /tmp/build-output
+          echo "binary content" > /tmp/build-output/myapp
+          echo "checksum" > /tmp/build-output/myapp.sha256
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/build-output
+            --output-path /tmp/push-provenance.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking for provenance file at /tmp/push-provenance.json"
+          if [ ! -f "/tmp/push-provenance.json" ]; then
+            echo "FAIL: push-provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: push-provenance.json exists"
+
+      - name: Assert provenance file is valid JSON with expected structure
+        run: |
+          echo "Validating push-provenance.json content"
+          cat /tmp/push-provenance.json
+          python3 -c "
+          import json
+          with open('/tmp/push-provenance.json') as f:
+              data = json.load(f)
+          print('Top-level keys:', list(data.keys()))
+          # Verify it has some content
+          assert len(data) > 0, 'Provenance file is empty'
+          print('PASS: provenance file has content')
+          "
+          echo "PASS: provenance JSON structure is valid"

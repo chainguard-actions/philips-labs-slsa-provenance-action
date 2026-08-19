@@ -1,0 +1,63 @@
+name: Test basic file provenance generation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/tags/v1.0.0
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create artifact file for provenance
+        run: |
+          mkdir -p /tmp/release-assets
+          echo "hello world" > /tmp/release-assets/artifact.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/release-assets
+            --output-path /tmp/provenance.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking for provenance file at /tmp/provenance.json"
+          if [ ! -f "/tmp/provenance.json" ]; then
+            echo "FAIL: provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Validating provenance.json is valid JSON"
+          if ! python3 -c "import json, sys; json.load(open('/tmp/provenance.json'))" 2>&1; then
+            echo "FAIL: provenance.json is not valid JSON"
+            exit 1
+          fi
+          echo "PASS: provenance.json is valid JSON"
+
+      - name: Assert provenance contains expected fields
+        run: |
+          echo "Checking provenance content"
+          cat /tmp/provenance.json
+          # Check for key SLSA provenance fields
+          if ! python3 -c "
+          import json
+          with open('/tmp/provenance.json') as f:
+              data = json.load(f)
+          # SLSA provenance should have _type or subject fields
+          assert '_type' in data or 'subject' in data or 'predicate' in data, 'Missing expected SLSA fields'
+          print('Fields found:', list(data.keys()))
+          "; then
+            echo "FAIL: provenance.json missing expected SLSA fields"
+            exit 1
+          fi
+          echo "PASS: provenance.json contains expected SLSA fields"

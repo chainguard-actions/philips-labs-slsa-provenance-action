@@ -56,19 +56,22 @@ runs:
       id: compose-args
       shell: bash
       run: |
-        encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
-        encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
+        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
 
-        args=("$INPUT_COMMAND")
-        args+=("$INPUT_SUBCOMMAND")
+        args=("${INPUT_COMMAND}")
+        args+=("${INPUT_SUBCOMMAND}")
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        args+=("$INPUT_ARGUMENTS")
+
+        # Split INPUT_ARGUMENTS on whitespace into separate array elements
+        read -r -a extra_args <<< "${INPUT_ARGUMENTS}"
+        args+=("${extra_args[@]}")
 
         safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"
-        echo "::set-output name=provenance_args::${safe_args}"
+        echo "provenance_args=${safe_args}" >> "$GITHUB_OUTPUT"
       env:
         GITHUB_CONTEXT: ${{ inputs.github_context }}
         RUNNER_CONTEXT: ${{ inputs.runner_context }}
@@ -78,7 +81,7 @@ runs:
     - name: Generate provenance
       shell: bash
       run: |
-        read -ra provenance_args <<< "$PROVENANCE_ARGS"
+        read -r -a provenance_args <<< "${PROVENANCE_ARGS}"
         "$INSTALL_PATH/slsa-provenance" "${provenance_args[@]}"
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}

@@ -1,0 +1,74 @@
+name: Test generate provenance with extra materials
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create a test artifact and materials file
+        run: |
+          echo "artifact with materials" > /tmp/test-artifact-materials.txt
+          cp "$GITHUB_WORKSPACE/tests/fixtures/materials-valid.json" /tmp/materials-valid.json
+
+      - name: Set up fake slsa-provenance binary and mock curl
+        run: |
+          # Build a fake tarball from the committed fixture binary
+          cp "$GITHUB_WORKSPACE/tests/fixtures/fake-slsa-provenance.sh" /tmp/slsa-provenance
+          chmod +x /tmp/slsa-provenance
+          tar -czf /tmp/fake-slsa-provenance.tar.gz -C /tmp slsa-provenance
+          rm /tmp/slsa-provenance
+
+          # Install fake curl from committed fixture
+          mkdir -p /tmp/fake-bin
+          cp "$GITHUB_WORKSPACE/tests/fixtures/fake-curl.sh" /tmp/fake-bin/curl
+          chmod +x /tmp/fake-bin/curl
+
+          echo "/tmp/fake-bin" >> "$GITHUB_PATH"
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifact-materials.txt
+            --output-path /tmp/provenance-materials.json
+            --extra-materials /tmp/materials-valid.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance-materials.json ]; then
+            echo "FAIL: provenance-materials.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Checking provenance file is valid JSON..."
+          if ! python3 -m json.tool /tmp/provenance-materials.json > /dev/null 2>&1; then
+            echo "FAIL: provenance-materials.json is not valid JSON"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json is valid JSON"
+
+      - name: Assert provenance contains materials
+        run: |
+          echo "Checking provenance contains materials..."
+          MATERIALS=$(python3 -c "
+          import json, sys
+          d = json.load(open('/tmp/provenance-materials.json'))
+          materials = d.get('predicate', {}).get('materials', [])
+          print(len(materials))
+          " 2>/dev/null || echo "0")
+          echo "Number of materials: $MATERIALS"
+          if [ "$MATERIALS" -lt 1 ] 2>/dev/null; then
+            echo "FAIL: expected at least 1 material in provenance, got: $MATERIALS"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance contains materials"
