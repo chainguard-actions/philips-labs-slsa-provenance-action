@@ -1,0 +1,51 @@
+name: Test custom install directory
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create a dummy artifact file
+        run: |
+          echo "custom install dir test artifact" > /tmp/artifact-custom.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          install-dir: /tmp/my-slsa-install
+          arguments: >-
+            --artifact-path /tmp/artifact-custom.txt
+            --output-path /tmp/provenance-custom.json
+
+      - name: Assert binary was installed in custom directory
+        run: |
+          echo "Checking binary exists in custom install dir..."
+          if [ ! -f /tmp/my-slsa-install/slsa-provenance ]; then
+            echo "FAIL: slsa-provenance binary not found in /tmp/my-slsa-install"
+            ls -la /tmp/my-slsa-install/ 2>/dev/null || echo "(directory does not exist)"
+            exit 1
+          fi
+          echo "PASS: slsa-provenance binary found in custom install dir"
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance-custom.json ]; then
+            echo "FAIL: provenance-custom.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance-custom.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Checking provenance file is valid JSON..."
+          if ! python3 -m json.tool /tmp/provenance-custom.json > /dev/null 2>&1; then
+            echo "FAIL: provenance-custom.json is not valid JSON"
+            cat /tmp/provenance-custom.json
+            exit 1
+          fi
+          echo "PASS: provenance-custom.json is valid JSON"

@@ -1,0 +1,71 @@
+name: Test provenance generation with extra materials
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create a dummy artifact file and materials file
+        run: |
+          echo "materials test artifact" > /tmp/artifact-materials.txt
+          cat > /tmp/materials.json << 'EOF'
+          [
+            {
+              "uri": "pkg:deb/debian/stunnel4@5.50-3?arch=amd64",
+              "digest": {
+                "sha256": "e1731ae217fcbc64d4c00d707dcead45c828c5f762bcf8cc56d87de511e096fa"
+              }
+            }
+          ]
+          EOF
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/artifact-materials.txt
+            --output-path /tmp/provenance-materials.json
+            --extra-materials /tmp/materials.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance-materials.json ]; then
+            echo "FAIL: provenance-materials.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json exists"
+
+      - name: Assert provenance contains materials
+        run: |
+          echo "Checking provenance contains materials..."
+          MATERIALS=$(python3 -c "
+          import json, sys
+          d = json.load(open('/tmp/provenance-materials.json'))
+          pred = d.get('predicate', {})
+          mats = pred.get('materials', [])
+          print(len(mats))
+          " 2>/dev/null || echo "0")
+          echo "materials count: $MATERIALS"
+          if [ "$MATERIALS" -lt 1 ]; then
+            echo "FAIL: expected at least 1 material in provenance, got $MATERIALS"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance contains $MATERIALS material(s)"
+
+      - name: Assert provenance is valid JSON with expected structure
+        run: |
+          echo "Checking provenance structure..."
+          TYPE=$(python3 -c "import json; d=json.load(open('/tmp/provenance-materials.json')); print(d.get('_type',''))" 2>/dev/null || echo "")
+          echo "type: $TYPE"
+          if [ -z "$TYPE" ]; then
+            echo "FAIL: provenance _type field is missing or empty"
+            cat /tmp/provenance-materials.json
+            exit 1
+          fi
+          echo "PASS: provenance has _type: $TYPE"

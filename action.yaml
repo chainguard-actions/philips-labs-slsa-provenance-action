@@ -56,19 +56,28 @@ runs:
       id: compose-args
       shell: bash
       run: |
-        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
-        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
+        encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
 
-        args=("${INPUT_COMMAND}")
-        args+=("${INPUT_SUBCOMMAND}")
+        args=()
+        if [ -n "$INPUT_COMMAND" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$INPUT_COMMAND" | xargs printf '%s\0')
+        fi
+        if [ -n "$INPUT_SUBCOMMAND" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs printf '%s\0')
+        fi
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        args+=("${INPUT_ARGUMENTS}")
+        if [ -n "$INPUT_ARGUMENTS" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$INPUT_ARGUMENTS" | xargs printf '%s\0')
+        fi
 
-        safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"
-        echo "::set-output name=provenance_args::${safe_args}"
+        echo "::set-output name=provenance_args::${args[@]}"
       env:
         GITHUB_CONTEXT: ${{ inputs.github_context }}
         RUNNER_CONTEXT: ${{ inputs.runner_context }}
@@ -78,8 +87,12 @@ runs:
     - name: Generate provenance
       shell: bash
       run: |
-        read -ra provenance_args <<< "${PROVENANCE_ARGS}"
-        "$INSTALL_PATH/slsa-provenance" "${provenance_args[@]}"
+        args=()
+        if [ -n "$PROVENANCE_ARGS" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$PROVENANCE_ARGS" | xargs printf '%s\0')
+        fi
+        "$INSTALL_PATH/slsa-provenance" "${args[@]}"
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
         PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}
