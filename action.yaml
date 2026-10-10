@@ -52,48 +52,30 @@ runs:
       run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
-    - name: compose arguments
-      id: compose-args
+    - name: Generate provenance
       shell: bash
       run: |
-        encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
-        encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
+        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
 
         args=()
-        if [ -n "$INPUT_COMMAND" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_COMMAND" | xargs printf '%s\0')
-        fi
-        if [ -n "$INPUT_SUBCOMMAND" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs printf '%s\0')
-        fi
+        args+=("${INPUT_COMMAND}")
+        args+=("${INPUT_SUBCOMMAND}")
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        if [ -n "$INPUT_ARGUMENTS" ]; then
+
+        if [ -n "${INPUT_ARGUMENTS}" ]; then
           while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_ARGUMENTS" | xargs printf '%s\0')
+            < <(printf '%s' "${INPUT_ARGUMENTS}" | xargs printf '%s\0')
         fi
 
-        safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"
-        echo "provenance_args=${safe_args}" >> "$GITHUB_OUTPUT"
+        "${INSTALL_PATH}/slsa-provenance" "${args[@]}"
       env:
         GITHUB_CONTEXT: ${{ inputs.github_context }}
         RUNNER_CONTEXT: ${{ inputs.runner_context }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_SUBCOMMAND: ${{ inputs.subcommand }}
         INPUT_ARGUMENTS: ${{ inputs.arguments }}
-    - name: Generate provenance
-      shell: bash
-      run: |
-        args=()
-        if [ -n "$PROVENANCE_ARGS" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$PROVENANCE_ARGS" | xargs printf '%s\0')
-        fi
-        "$INSTALL_PATH/slsa-provenance" "${args[@]}"
-      env:
         INSTALL_PATH: ${{ inputs.install-dir }}
-        PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}
