@@ -1,0 +1,55 @@
+name: Test basic file provenance generation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create artifact to generate provenance for
+        run: |
+          echo "hello world" > /tmp/test-artifact.txt
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifact.txt
+            --output-path /tmp/provenance.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance.json ]; then
+            echo "FAIL: provenance.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance.json exists"
+
+      - name: Assert provenance file is valid JSON
+        run: |
+          echo "Checking provenance file is valid JSON..."
+          if ! python3 -c "import json, sys; json.load(open('/tmp/provenance.json'))" 2>&1; then
+            echo "FAIL: provenance.json is not valid JSON"
+            exit 1
+          fi
+          echo "PASS: provenance.json is valid JSON"
+
+      - name: Assert provenance contains expected fields
+        run: |
+          echo "Checking provenance structure..."
+          BUILDER=$(python3 -c "import json; d=json.load(open('/tmp/provenance.json')); print(d.get('predicate', {}).get('builder', {}).get('id', ''))" 2>/dev/null || echo "")
+          echo "builder: $BUILDER"
+          BUILD_TYPE=$(python3 -c "import json; d=json.load(open('/tmp/provenance.json')); print(d.get('predicate', {}).get('buildType', ''))" 2>/dev/null || echo "")
+          echo "buildType: $BUILD_TYPE"
+          # Check that the provenance has a predicate section (SLSA structure)
+          HAS_PREDICATE=$(python3 -c "import json; d=json.load(open('/tmp/provenance.json')); print('yes' if 'predicate' in d else 'no')" 2>/dev/null || echo "no")
+          echo "has predicate: $HAS_PREDICATE"
+          if [ "$HAS_PREDICATE" != "yes" ]; then
+            echo "FAIL: provenance.json does not contain 'predicate' field"
+            exit 1
+          fi
+          echo "PASS: provenance has expected SLSA structure"

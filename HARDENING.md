@@ -8,45 +8,36 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
-Action **philips-labs--slsa-provenance-action/v0.7.0** was hardened automatically. 7 finding(s) were identified and resolved across 2 iteration(s).
+Action **philips-labs--slsa-provenance-action/v0.7.0** was hardened automatically. 5 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Rule (a): The 'compose arguments' step in action.yaml directly interpolates user-controlled inputs inside a run: shell command. Specifically, ${{ inputs.command }}, ${{ inputs.subcommand }}, and ${{ inputs.arguments }} are interpolated directly into the shell script, allowing an attacker to inject arbitrary shell commands. Example offending lines: `args=(${{ inputs.command }})`, `args+=(${{ inputs.subcommand }})`, `args+=(${{ inputs.arguments }})`.
+Rule (a): The 'compose arguments' step directly interpolates untrusted input expressions inside the `run:` shell script. `${{ inputs.command }}`, `${{ inputs.subcommand }}`, and `${{ inputs.arguments }}` are expanded by the YAML template engine before the shell ever sees them, allowing an attacker to inject arbitrary shell commands. These values should be passed via `env:` variables and then referenced as quoted shell variables.
+
+Rule (b): `echo ${GITHUB_CONTEXT}` and `echo ${RUNNER_CONTEXT}` use unquoted shell variable expansions of workflow-controlled values, allowing shell metacharacter injection.
+
+Additionally, the 'Generate provenance' step interpolates `${{ steps.compose-args.outputs.provenance_args }}` directly in the `run:` command string (rule a), which is derived from the attacker-controlled inputs above.
 
 Locations:
 
 - `action.yaml:43`
 - `action.yaml:44`
-- `action.yaml:49`
-
-### script-injection (severity: high)
-
-Rule (a): The 'Generate provenance' step in action.yaml directly interpolates ${{ steps.compose-args.outputs.provenance_args }} inside a run: shell command. Step outputs can contain attacker-controlled content (derived from inputs.command, inputs.subcommand, inputs.arguments), enabling shell command injection. Offending line: `run: $INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}`
-
-Locations:
-
-- `action.yaml:55`
-
-### script-injection (severity: high)
-
-Rule (b): The 'compose arguments' step uses unquoted shell variable expansions of env vars that hold workflow-controllable data. `echo ${GITHUB_CONTEXT}` and `echo ${RUNNER_CONTEXT}` are unquoted, allowing shell metacharacter injection from the github_context and runner_context inputs. These should be `echo "${GITHUB_CONTEXT}"` and `echo "${RUNNER_CONTEXT}"`.
-
-Locations:
-
-- `action.yaml:40`
-- `action.yaml:41`
+- `action.yaml:46`
+- `action.yaml:47`
+- `action.yaml:52`
+- `action.yaml:61`
 
 ### github-env-injection (severity: high)
 
-install-slsa-provenance.sh writes $INSTALL_PATH to $GITHUB_PATH without sanitization. INSTALL_PATH is set from the inputs.install-dir input (via the INSTALL_PATH env var in action.yaml), which is caller-controlled. The write `echo "$INSTALL_PATH" >> "${GITHUB_PATH:-...}"` does not apply the required `printf '%s' ... | tr -d '\n\r'` sanitization before writing to the special environment file, enabling newline injection into GITHUB_PATH.
+The install script writes `$INSTALL_PATH` to `$GITHUB_PATH` without sanitization. `INSTALL_PATH` is set from `${{ inputs.install-dir }}` (an untrusted user-controlled input) via the `env:` block in action.yaml. Because no `printf '%s' ... | tr -d '\n\r'` sanitization is applied before the write, an attacker can inject newlines into `$GITHUB_PATH` to smuggle arbitrary environment variable assignments or path entries, potentially hijacking subsequent steps.
 
 Locations:
 
+- `action.yaml:37`
 - `install-slsa-provenance.sh:96`
 
 ### static-inline-injection (severity: high)
@@ -83,23 +74,15 @@ Locations:
 
 Fixed all findings in action.yaml and install-slsa-provenance.sh:
 
-1. action.yaml - compose arguments step: Moved ${{ inputs.command }}, ${{ inputs.subcommand }}, and ${{ inputs.arguments }} out of the run: shell block into the step's env: map as INPUT_COMMAND, INPUT_SUBCOMMAND, and INPUT_ARGUMENTS respectively. These are now referenced as quoted shell variables ("${INPUT_COMMAND}", etc.) to prevent shell injection.
+1. script-injection / static-inline-injection: Moved ${{ inputs.command }}, ${{ inputs.subcommand }}, and ${{ inputs.arguments }} from the run: block into the env: block as INPUT_COMMAND, INPUT_SUBCOMMAND, and INPUT_ARGUMENTS. Used xargs-based NUL-delimited tokenization to safely expand these list-style inputs into bash arrays. Fixed unquoted ${GITHUB_CONTEXT} and ${RUNNER_CONTEXT} shell variable expansions. Moved ${{ steps.compose-args.outputs.provenance_args }} from the Generate provenance run: block into env: as PROVENANCE_ARGS, then tokenized it with xargs. Also updated deprecated ::set-output to use $GITHUB_OUTPUT.
 
-2. action.yaml - compose arguments step: Fixed unquoted echo ${GITHUB_CONTEXT} and echo ${RUNNER_CONTEXT} to use double quotes: echo "${GITHUB_CONTEXT}" and echo "${RUNNER_CONTEXT}".
-
-3. action.yaml - Generate provenance step: Moved ${{ steps.compose-args.outputs.provenance_args }} out of the run: shell command into the step's env: map as PROVENANCE_ARGS, referenced as ${PROVENANCE_ARGS} in the shell command.
-
-4. install-slsa-provenance.sh: Added newline sanitization before writing INSTALL_PATH to $GITHUB_PATH using `printf '%s' "$INSTALL_PATH" | tr -d '\n\r'`, storing the sanitized value in safe_install_path before the echo.
+2. github-env-injection: In install-slsa-provenance.sh, sanitized $INSTALL_PATH before writing to $GITHUB_PATH using printf '%s' "$INSTALL_PATH" | tr -d '\n\r' to strip newlines and carriage returns that could be used to inject additional entries.
 
 ### Iteration 2
 
-**Fixes applied:** github-env-injection, script-injection
+**Fixes applied:** github-env-injection
 
 **Notes:**
 
-Fixed both high-severity findings in action.yaml:
-
-1. github-env-injection (line 51): Sanitized each user-controlled input (INPUT_COMMAND, INPUT_SUBCOMMAND, INPUT_ARGUMENTS) with `printf '%s' ... | tr -d '\n\r'` before building the args array. Also sanitized the final args string before writing to $GITHUB_OUTPUT. Replaced the legacy `::set-output` mechanism with the modern `>> "$GITHUB_OUTPUT"` approach.
-
-2. script-injection (line 57): Sanitized INSTALL_PATH with `printf '%s' ... | tr -d '\n\r'` and double-quoted the binary path as `"$safe_install_path/slsa-provenance"`. Split PROVENANCE_ARGS into a proper bash array using `read -ra prov_args <<< "${PROVENANCE_ARGS}"` and passed it as `"${prov_args[@]}"` to prevent shell metacharacter interpretation.
+Fixed the github-env-injection finding in hardened/action/action.yaml. In the 'compose arguments' step, the line `echo "provenance_args=${args[*]}" >> "$GITHUB_OUTPUT"` was replaced with two lines: first capturing the sanitized value `safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"`, then writing `echo "provenance_args=${safe_args}" >> "$GITHUB_OUTPUT"`. This strips any newline characters from the composed arguments before writing to GITHUB_OUTPUT, preventing injection of additional key=value pairs by a caller who embeds newlines in inputs like `command`, `subcommand`, `arguments`, `github_context`, or `runner_context`.
 

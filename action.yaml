@@ -59,17 +59,19 @@ runs:
         encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
         encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
 
-        safe_command="$(printf '%s' "${INPUT_COMMAND}" | tr -d '\n\r')"
-        safe_subcommand="$(printf '%s' "${INPUT_SUBCOMMAND}" | tr -d '\n\r')"
-        safe_arguments="$(printf '%s' "${INPUT_ARGUMENTS}" | tr -d '\n\r')"
-
-        args=("${safe_command}")
-        args+=("${safe_subcommand}")
+        args=()
+        while IFS= read -r -d '' t; do args+=("$t"); done \
+          < <(printf '%s' "$INPUT_COMMAND" | xargs printf '%s\0')
+        while IFS= read -r -d '' t; do args+=("$t"); done \
+          < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs printf '%s\0')
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        args+=("${safe_arguments}")
+        if [ -n "$INPUT_ARGUMENTS" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$INPUT_ARGUMENTS" | xargs printf '%s\0')
+        fi
 
         safe_args="$(printf '%s' "${args[*]}" | tr -d '\n\r')"
         echo "provenance_args=${safe_args}" >> "$GITHUB_OUTPUT"
@@ -82,10 +84,12 @@ runs:
     - name: Generate provenance
       shell: bash
       run: |
-        safe_install_path="$(printf '%s' "${INSTALL_PATH}" | tr -d '\n\r')"
-        # Split the sanitized provenance args string into an array for safe execution
-        read -ra prov_args <<< "${PROVENANCE_ARGS}"
-        "$safe_install_path/slsa-provenance" "${prov_args[@]}"
+        args=()
+        if [ -n "$PROVENANCE_ARGS" ]; then
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$PROVENANCE_ARGS" | xargs printf '%s\0')
+        fi
+        "$INSTALL_PATH/slsa-provenance" "${args[@]}"
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
         PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}

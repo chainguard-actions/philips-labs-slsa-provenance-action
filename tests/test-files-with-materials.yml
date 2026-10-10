@@ -1,0 +1,69 @@
+name: Test file provenance generation with materials
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create artifact and materials file
+        run: |
+          echo "artifact with materials" > /tmp/test-artifact-materials.txt
+          # Use the valid materials format from the action's own test-data
+          cat > /tmp/materials.json << 'EOF'
+          [
+            {
+              "uri": "pkg:deb/debian/stunnel4@5.50-3?arch=amd64",
+              "digest": {
+                "sha256": "e1731ae217fcbc64d4c00d707dcead45c828c5f762bcf8cc56d87de511e096fa"
+              }
+            }
+          ]
+          EOF
+
+      - id: action
+        uses: .
+        with:
+          command: generate
+          subcommand: files
+          arguments: >-
+            --artifact-path /tmp/test-artifact-materials.txt
+            --output-path /tmp/provenance-materials.json
+            --extra-materials /tmp/materials.json
+
+      - name: Assert provenance file was created
+        run: |
+          echo "Checking provenance file exists..."
+          if [ ! -f /tmp/provenance-materials.json ]; then
+            echo "FAIL: provenance-materials.json was not created"
+            exit 1
+          fi
+          echo "PASS: provenance-materials.json exists"
+
+      - name: Assert provenance contains materials
+        run: |
+          echo "Checking provenance contains materials..."
+          MATERIALS=$(python3 -c "
+          import json
+          d = json.load(open('/tmp/provenance-materials.json'))
+          materials = d.get('predicate', {}).get('materials', [])
+          print(len(materials))
+          " 2>/dev/null || echo "0")
+          echo "materials count: $MATERIALS"
+          if [ "$MATERIALS" -lt "1" ]; then
+            echo "FAIL: provenance does not contain expected materials"
+            exit 1
+          fi
+          echo "PASS: provenance contains $MATERIALS material(s)"
+
+      - name: Assert provenance is valid SLSA structure
+        run: |
+          echo "Checking SLSA structure..."
+          python3 -c "
+          import json, sys
+          d = json.load(open('/tmp/provenance-materials.json'))
+          assert 'predicate' in d, 'missing predicate'
+          assert 'subject' in d, 'missing subject'
+          print('PASS: valid SLSA structure')
+          " || { echo "FAIL: invalid SLSA structure"; exit 1; }
