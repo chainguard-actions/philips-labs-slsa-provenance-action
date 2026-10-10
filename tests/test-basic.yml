@@ -1,19 +1,15 @@
-name: Test basic generate files provenance
+name: Test basic provenance generation for files
 on:
   workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_REF: refs/tags/v1.0.0
-      GITHUB_EVENT_NAME: push
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Create test artifact
+      - name: Create artifact to generate provenance for
         run: |
-          mkdir -p /tmp/test-artifacts
-          echo "hello slsa world" > /tmp/test-artifacts/hello.txt
+          echo "hello world" > /tmp/test-artifact.txt
 
       - id: action
         uses: .
@@ -21,13 +17,12 @@ jobs:
           command: generate
           subcommand: files
           arguments: >-
-            --artifact-path /tmp/test-artifacts
+            --artifact-path /tmp/test-artifact.txt
             --output-path /tmp/provenance.json
 
       - name: Assert provenance file was created
         run: |
-          echo "Checking for provenance file at /tmp/provenance.json"
-          if [ ! -f "/tmp/provenance.json" ]; then
+          if [ ! -f /tmp/provenance.json ]; then
             echo "FAIL: provenance.json was not created"
             exit 1
           fi
@@ -35,8 +30,7 @@ jobs:
 
       - name: Assert provenance file is valid JSON
         run: |
-          echo "Validating provenance JSON content"
-          if ! python3 -m json.tool /tmp/provenance.json > /dev/null 2>&1; then
+          if ! cat /tmp/provenance.json | python3 -m json.tool > /dev/null 2>&1; then
             echo "FAIL: provenance.json is not valid JSON"
             cat /tmp/provenance.json
             exit 1
@@ -45,10 +39,10 @@ jobs:
 
       - name: Assert provenance contains expected fields
         run: |
-          echo "Checking provenance content"
-          cat /tmp/provenance.json
-          if ! grep -q "subject" /tmp/provenance.json; then
-            echo "FAIL: provenance.json does not contain 'subject' field"
+          PREDICATE_TYPE=$(python3 -c "import json,sys; d=json.load(open('/tmp/provenance.json')); print(d.get('predicateType',''))" 2>/dev/null || echo "")
+          echo "predicate type: $PREDICATE_TYPE"
+          if [ -z "$PREDICATE_TYPE" ]; then
+            echo "FAIL: predicateType is empty"
             exit 1
           fi
-          echo "PASS: provenance.json contains expected SLSA fields"
+          echo "PASS: provenance has predicateType: $PREDICATE_TYPE"
