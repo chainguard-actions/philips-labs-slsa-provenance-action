@@ -106,5 +106,5 @@ tar -xzf "${ARCHIVE}" "${BINARY}"
 rm "${ARCHIVE}"
 
 # for testing purposes fall back to "$INSTALL_PATH/GITHUB_PATH"
-safe_install_path="$(printf '%s' "$INSTALL_PATH" | tr -d '\n\r')"
-echo "$safe_install_path" >> "${GITHUB_PATH:-"$INSTALL_PATH/GITHUB_PATH"}"
+SAFE_INSTALL_PATH="$(printf '%s' "$INSTALL_PATH" | tr -d '\n\r')"
+echo "$SAFE_INSTALL_PATH" >> "${GITHUB_PATH:-"$INSTALL_PATH/GITHUB_PATH"}"

@@ -49,44 +49,40 @@ runs:
           "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     - name: install binary
       shell: bash
-      run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
+      run: '"$GITHUB_ACTION_PATH/install-slsa-provenance.sh"'
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
 
-    - name: compose arguments
+    - name: Generate provenance
       id: compose-args
       shell: bash
       run: |
-        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
-        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
+        encoded_github="$(printf '%s\n' "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(printf '%s\n' "${RUNNER_CONTEXT}" | base64 -w 0)"
+
+        # quote-aware split, matching how the inlined expressions were parsed upstream
+        split_into_args() {
+          if [ -n "$1" ]; then
+            printf '%s' "$1" | xargs -r true >/dev/null
+            while IFS= read -r -d '' t; do args+=("$t"); done \
+              < <(printf '%s' "$1" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
+          fi
+        }
 
         args=()
-        while IFS= read -r -d '' t; do args+=("$t"); done \
-          < <(printf '%s' "$INPUT_COMMAND" | xargs -r printf '%s\0')
-        while IFS= read -r -d '' t; do args+=("$t"); done \
-          < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs -r printf '%s\0')
+        split_into_args "$INPUT_COMMAND"
+        split_into_args "$INPUT_SUBCOMMAND"
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        while IFS= read -r -d '' t; do args+=("$t"); done \
-          < <(printf '%s' "$INPUT_ARGUMENTS" | xargs -r printf '%s\0')
+        split_into_args "$INPUT_ARGUMENTS"
 
-        echo "::set-output name=provenance_args::${args[@]}"
+        "$INSTALL_PATH/slsa-provenance" "${args[@]}"
       env:
         GITHUB_CONTEXT: ${{ inputs.github_context }}
         RUNNER_CONTEXT: ${{ inputs.runner_context }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_SUBCOMMAND: ${{ inputs.subcommand }}
         INPUT_ARGUMENTS: ${{ inputs.arguments }}
-
-    - name: Generate provenance
-      shell: bash
-      env:
         INSTALL_PATH: ${{ inputs.install-dir }}
-        PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}
-      run: |
-        args=()
-        while IFS= read -r -d '' t; do args+=("$t"); done \
-          < <(printf '%s' "$PROVENANCE_ARGS" | xargs -r printf '%s\0')
-        "$INSTALL_PATH/slsa-provenance" "${args[@]}"

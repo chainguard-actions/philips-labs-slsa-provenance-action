@@ -16,32 +16,31 @@ Action **philips-labs--slsa-provenance-action/v0.7.2** was hardened automaticall
 
 ### script-injection (severity: high)
 
-Rule (a): The 'compose arguments' step directly interpolates user-controlled inputs into the run: shell script without quoting. Specifically: `args=(${{ inputs.command }})`, `args+=(${{ inputs.subcommand }})`, and `args+=(${{ inputs.arguments }})` allow an attacker to inject arbitrary shell commands by supplying crafted input values (e.g. containing semicolons, backticks, or subshell syntax). Rule (b): `${GITHUB_CONTEXT}` and `${RUNNER_CONTEXT}` are used unquoted in `echo ${GITHUB_CONTEXT} | base64 -w 0` and `echo ${RUNNER_CONTEXT} | base64 -w 0`, allowing shell metacharacter injection from those env vars.
+Rule (a): the 'compose arguments' step puts user-supplied input expressions straight into the run: script: `args=(${{ inputs.command }})`, `args+=(${{ inputs.subcommand }})` and `args+=(${{ inputs.arguments }})`. Text in these inputs such as $(...), backticks or ; is run by bash. Rule (b): `echo ${GITHUB_CONTEXT}` and `echo ${RUNNER_CONTEXT}` expand input-sourced env vars without quotes. Fix: move each input into an env: variable and expand it in double quotes.
 
 Locations:
 
+- `action.yaml:46`
+- `action.yaml:47`
+- `action.yaml:52`
 - `action.yaml:43`
-- `action.yaml:44`
-- `action.yaml:49`
-- `action.yaml:40`
-- `action.yaml:41`
 
 ### script-injection (severity: high)
 
-Rule (a): The 'Generate provenance' step directly interpolates a step output expression into the run: shell command: `$INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}`. Since `provenance_args` is itself built from user-controlled inputs (command, subcommand, arguments), this allows arbitrary shell command injection.
+Rule (a): the 'Generate provenance' step puts a step output expression straight into the run: script: `$INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}`. That output is built from untrusted inputs. Rule (b): `$INSTALL_PATH` comes from inputs.install-dir and is expanded without quotes.
 
 Locations:
 
-- `action.yaml:55`
+- `action.yaml:61`
 
 ### github-env-injection (severity: high)
 
-The install-slsa-provenance.sh script writes `$INSTALL_PATH` directly to `$GITHUB_PATH` without sanitization: `echo "$INSTALL_PATH" >> "${GITHUB_PATH:-...}"`. The `INSTALL_PATH` variable is set from `inputs.install-dir` (via the `INSTALL_PATH` env var in action.yaml line 34) and is never sanitized with `printf '%s' ... | tr -d '\n\r'` before the write. A calling workflow can supply a newline-containing value for `inputs.install-dir` to inject arbitrary entries into `$GITHUB_PATH`.
+The 'install binary' step passes inputs.install-dir to the script as INSTALL_PATH. The script then runs `echo "$INSTALL_PATH" >> "${GITHUB_PATH:-...}"` with no `printf '%s' ... | tr -d '\n\r'` cleanup first, so a value containing newlines can add extra entries to GITHUB_PATH.
 
 Locations:
 
-- `install-slsa-provenance.sh:91`
-- `action.yaml:34`
+- `action.yaml:35`
+- `install-slsa-provenance.sh:109`
 
 ### static-inline-injection (severity: high)
 
@@ -75,11 +74,5 @@ Locations:
 
 **Notes:**
 
-Fixed all findings in action.yaml and install-slsa-provenance.sh:
-
-1. action.yaml 'compose arguments' step: Moved ${{ inputs.command }}, ${{ inputs.subcommand }}, and ${{ inputs.arguments }} to env: block as INPUT_COMMAND, INPUT_SUBCOMMAND, INPUT_ARGUMENTS. Used xargs-based tokenization into bash arrays to safely handle list-style inputs. Fixed unquoted ${GITHUB_CONTEXT} and ${RUNNER_CONTEXT} by replacing 'echo ${VAR}' with 'printf "%s" "${VAR}"'.
-
-2. action.yaml 'Generate provenance' step: Moved ${{ steps.compose-args.outputs.provenance_args }} to env: block as PROVENANCE_ARGS, then safely tokenized it with xargs into a bash array before invoking the binary.
-
-3. install-slsa-provenance.sh line 91: Added sanitization of INSTALL_PATH before writing to GITHUB_PATH using 'printf "%s" "$INSTALL_PATH" | tr -d '\n\r'' to prevent newline injection into GITHUB_PATH.
+action.yaml: I merged the 'compose arguments' and 'Generate provenance' steps into one step (id compose-args is kept). The command, subcommand and arguments inputs now come in through env: variables. Each one is split into a bash array with the quote-aware xargs method, which splits the same way the inlined expressions did upstream. The binary is called as "$INSTALL_PATH/slsa-provenance" "${args[@]}". This removes the deprecated ::set-output and the second inlining of the step output. The GITHUB_CONTEXT and RUNNER_CONTEXT values are now quoted before base64 encoding. The install script path is quoted as well. install-slsa-provenance.sh: INSTALL_PATH has \n and \r removed before it is written to GITHUB_PATH. None of this has been run or tested yet.
 
