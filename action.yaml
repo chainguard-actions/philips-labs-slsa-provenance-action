@@ -52,6 +52,7 @@ runs:
       run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
+
     - name: compose arguments
       id: compose-args
       shell: bash
@@ -59,23 +60,22 @@ runs:
         encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
         encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
 
+        split_into_args() {
+          if [ -n "$1" ]; then
+            printf '%s' "$1" | xargs -r true >/dev/null
+            while IFS= read -r -d '' t; do args+=("$t"); done \
+              < <(printf '%s' "$1" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
+          fi
+        }
+
         args=()
-        if [ -n "$INPUT_COMMAND" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_COMMAND" | xargs printf '%s\0')
-        fi
-        if [ -n "$INPUT_SUBCOMMAND" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs printf '%s\0')
-        fi
+        split_into_args "$INPUT_COMMAND"
+        split_into_args "$INPUT_SUBCOMMAND"
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-        if [ -n "$INPUT_ARGUMENTS" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_ARGUMENTS" | xargs printf '%s\0')
-        fi
+        split_into_args "$INPUT_ARGUMENTS"
 
         echo "::set-output name=provenance_args::${args[@]}"
       env:
@@ -84,13 +84,15 @@ runs:
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_SUBCOMMAND: ${{ inputs.subcommand }}
         INPUT_ARGUMENTS: ${{ inputs.arguments }}
+
     - name: Generate provenance
       shell: bash
       run: |
         args=()
         if [ -n "$PROVENANCE_ARGS" ]; then
+          printf '%s' "$PROVENANCE_ARGS" | xargs -r true >/dev/null
           while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$PROVENANCE_ARGS" | xargs printf '%s\0')
+            < <(printf '%s' "$PROVENANCE_ARGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
         "$INSTALL_PATH/slsa-provenance" "${args[@]}"
       env:

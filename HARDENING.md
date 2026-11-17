@@ -4,35 +4,43 @@
 
 > This file was generated automatically by the hardening agent.
 
-**Policy SHA:** `d636be7e43ef829af6e853da6b3c7566db9f72fe`
+**Policy SHA:** `374911c4be584df24e6da57af2d990570ef0f859`
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
 **Harden Agent Version:** `2`
 
-Action **philips-labs--slsa-provenance-action/v0.8.0** was hardened automatically. 5 finding(s) were identified and resolved across 2 iteration(s).
+Action **philips-labs--slsa-provenance-action/v0.8.0** was hardened automatically. 8 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Multiple direct ${{ }} expression interpolations appear inside run: shell command strings in action.yaml, violating sub-rule (a). (1) Line 43: `args=(${{ inputs.command }})` — the user-controlled input `inputs.command` is interpolated directly into the shell script, allowing an attacker to inject arbitrary shell commands. (2) Line 44: `args+=(${{ inputs.subcommand }})` — same issue with `inputs.subcommand`. (3) Line 47: `args+=(${{ inputs.arguments }})` — same issue with `inputs.arguments`. (4) Line 57: `$INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}` — the step output `steps.compose-args.outputs.provenance_args` (itself derived from attacker-controlled inputs) is interpolated directly into the shell command. All four cases allow shell metacharacter injection before the shell ever sees the value.
+Step 'compose arguments' (rule a): workflow expressions are placed straight into the run script, so the shell parses whatever they contain: `args=(${{ inputs.command }})`, `args+=(${{ inputs.subcommand }})`, `args+=(${{ inputs.arguments }})`. Rule (b) also fails: the env vars holding workflow-controlled input are expanded without quotes in `encoded_github="$(echo ${GITHUB_CONTEXT} | base64 -w 0)"` and `encoded_runner="$(echo ${RUNNER_CONTEXT} | base64 -w 0)"`. Fix: pass the inputs through env: variables and quote every expansion.
 
 Locations:
 
 - `action.yaml:43`
 - `action.yaml:44`
+- `action.yaml:46`
 - `action.yaml:47`
-- `action.yaml:57`
+- `action.yaml:52`
 
-### github-env-injection (severity: high)
+### script-injection (severity: high)
 
-In install-slsa-provenance.sh (invoked by the 'install binary' step of action.yaml), the variable `$INSTALL_PATH` is written directly to `$GITHUB_PATH` without sanitization: `echo "$INSTALL_PATH" >> "${GITHUB_PATH:-...}"`. `INSTALL_PATH` is set from `${{ inputs.install-dir }}` via the step's `env:` block — an attacker-controlled input. No `printf '%s' ... | tr -d '\n\r'` sanitization is applied before the write, so a newline-containing value could inject arbitrary entries into GITHUB_PATH (environment file injection).
+Step 'Generate provenance' (rule a): `run: $INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}` puts a step output, built from inputs.arguments and other inputs, straight into the shell command. Rule (b) also fails: `$INSTALL_PATH`, which comes from inputs.install-dir, is expanded without quotes.
 
 Locations:
 
-- `install-slsa-provenance.sh:96`
-- `action.yaml:35`
+- `action.yaml:61`
+
+### github-env-injection (severity: high)
+
+install-slsa-provenance.sh (run by the 'install binary' step, where INSTALL_PATH comes from inputs.install-dir) writes `echo "$INSTALL_PATH" >> "${GITHUB_PATH:-...}"` without first removing newlines (`printf '%s' ... | tr -d '\n\r'`). A value with newlines in it can add arbitrary entries to PATH.
+
+Locations:
+
+- `install-slsa-provenance.sh:109`
 
 ### static-inline-injection (severity: high)
 
@@ -58,27 +66,111 @@ Locations:
 
 - `action.yml:52`
 
+### prior-fix (severity: high)
+
+Carried forward from this version's previous harden, which fixed it; fix it again unless the code no longer has the problem. The previous harden changed action.yaml without recording a finding for it, and this analysis reported nothing there. Re-apply its security changes unless the code no longer needs them. The previous patch:
+```diff
+diff --git a/action.yaml b/action.yaml
+index 246ecd1..af18530 100644
+--- a/action.yaml
++++ b/action.yaml
+@@ -30,34 +30,69 @@ inputs:
+ runs:
+   using: 'composite'
+   steps:
+     - name: install binary
+       shell: bash
+       run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
+       env:
+         INSTALL_PATH: ${{ inputs.install-dir }}
+-
+     - name: compose arguments
+       id: compose-args
+       shell: bash
+       run: |
+-        encoded_github="$(echo ${GITHUB_CONTEXT} | base64 -w 0)"
+-        encoded_runner="$(echo ${RUNNER_CONTEXT} | base64 -w 0)"
++        encoded_github="$(echo "${GITHUB_CONTEXT}" | base64 -w 0)"
++        encoded_runner="$(echo "${RUNNER_CONTEXT}" | base64 -w 0)"
+ 
+-        args=(${{ inputs.command }})
+-        args+=(${{ inputs.subcommand }})
++        args=()
++        if [ -n "$INPUT_COMMAND" ]; then
++          while IFS= read -r -d '' t; do args+=("$t"); done \
++            < <(printf '%s' "$INPUT_COMMAND" | xargs printf '%s\0')
++        fi
++        if [ -n "$INPUT_SUBCOMMAND" ]; then
++          while IFS= read -r -d '' t; do args+=("$t"); done \
++            < <(printf '%s' "$INPUT_SUBCOMMAND" | xargs printf '%s\0')
++        fi
+         args+=(--github-context)
+         args+=("${encoded_github}")
+         args+=(--runner-context)
+         args+=("${encoded_runner}")
+-        args+=(${{ inputs.arguments }})
++        if [ -n "$INPUT_ARGUMENTS" ]; then
++          while IFS= read -r -d '' t; do args+=("$t"); done \
++            < <(printf '%s' "$INPUT_ARGUMENTS" | xargs printf '%s\0')
++        fi
+ 
+         echo "::set-output name=provenance_args::${args[@]}"
+       env:
+         GITHUB_CONTEXT: ${{ inputs.github_context }}
+         RUNNER_CONTEXT: ${{ inputs.runner_context }}
+-
++        INPUT_COMMAND: ${{ inputs.command }}
++        INPUT_SUBCOMMAND: ${{ inputs.subcommand }}
++        INPUT_ARGUMENTS: ${{ inputs.arguments }}
+     - name: Generate provenance
+       shell: bash
+-      run: $INSTALL_PATH/slsa-provenance ${{ steps.compose-args.outputs.provenance_args }}
++      run: |
++        args=()
++        if [ -n "$PROVENANCE_ARGS" ]; then
++          while IFS= read -r -d '' t; do args+=("$t"); done \
++            < <(printf '%s' "$PROVENANCE_ARGS" | xargs printf '%s\0')
++        fi
++        "$INSTALL_PATH/slsa-provenance" "${args[@]}"
+       env:
+         INSTALL_PATH: ${{ inputs.install-dir }}
++        PROVENANCE_ARGS: ${{ steps.compose-args.outputs.provenance_args }}
+
+```
+
+Locations:
+
+- `action.yaml`
+
+### prior-fix (severity: high)
+
+Carried forward from this version's previous harden, which fixed it; fix it again unless the code no longer has the problem. The previous harden changed install-slsa-provenance.sh without recording a finding for it, and this analysis reported nothing there. Re-apply its security changes unless the code no longer needs them. The previous patch:
+```diff
+diff --git a/install-slsa-provenance.sh b/install-slsa-provenance.sh
+index 6db18c7..90c556e 100755
+--- a/install-slsa-provenance.sh
++++ b/install-slsa-provenance.sh
+@@ -106,4 +106,5 @@ tar -xzf "${ARCHIVE}" "${BINARY}"
+ rm "${ARCHIVE}"
+ 
+ # for testing purposes fall back to "$INSTALL_PATH/GITHUB_PATH"
+-echo "$INSTALL_PATH" >> "${GITHUB_PATH:-"$INSTALL_PATH/GITHUB_PATH"}"
++safe_install_path="$(printf '%s' "$INSTALL_PATH" | tr -d '\n\r')"
++echo "$safe_install_path" >> "${GITHUB_PATH:-"$INSTALL_PATH/GITHUB_PATH"}"
+
+```
+
+Locations:
+
+- `install-slsa-provenance.sh`
+
 ## Iteration Notes
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, github-env-injection, static-inline-injection
+**Fixes applied:** script-injection, github-env-injection, static-inline-injection, prior-fix
 
 **Notes:**
 
-Fixed all findings in action.yaml and install-slsa-provenance.sh:
-
-1. action.yaml - compose arguments step: Moved ${{ inputs.command }}, ${{ inputs.subcommand }}, and ${{ inputs.arguments }} from inline run: shell strings into the env: block as INPUT_COMMAND, INPUT_SUBCOMMAND, INPUT_ARGUMENTS. Used the xargs/read-loop tokenization idiom (with guards) since these are argument-list inputs.
-
-2. action.yaml - Generate provenance step: Moved ${{ steps.compose-args.outputs.provenance_args }} from inline run: shell string into the env: block as PROVENANCE_ARGS. Used the same xargs/read-loop tokenization idiom to safely expand the argument list.
-
-3. install-slsa-provenance.sh line 96: Added sanitization of INSTALL_PATH before writing to GITHUB_PATH using `printf '%s' "$INSTALL_PATH" | tr -d '\n\r'` to prevent newline injection into the GITHUB_PATH environment file.
-
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed unquoted variable expansions in the 'compose arguments' step of action.yaml. Changed `echo ${GITHUB_CONTEXT}` to `echo "${GITHUB_CONTEXT}"` and `echo ${RUNNER_CONTEXT}` to `echo "${RUNNER_CONTEXT}"` on lines 37-38. This prevents shell metacharacters in attacker-controlled input values (github_context and runner_context) from being interpreted as shell commands during the base64 encoding step.
+action.yaml: I moved inputs.command, inputs.subcommand and inputs.arguments into env: in the 'compose arguments' step. Upstream pasted these values straight into the script, so the shell honoured any quotes in them. To keep that splitting, each value is now split with the quote-aware xargs pattern: a guard against empty values, an 'xargs -r true' check that fails on an unmatched quote, and the shell's built-in printf run through sh -c. I also quoted the GITHUB_CONTEXT and RUNNER_CONTEXT expansions before base64. In 'Generate provenance', the step output now comes in through the PROVENANCE_ARGS env var and is split the same way, and "$INSTALL_PATH/slsa-provenance" is quoted. The literal '$HOME' default still behaves as it did upstream, because an unquoted expansion never expanded it either. install-slsa-provenance.sh: newlines and carriage returns are now stripped from INSTALL_PATH before it is written to GITHUB_PATH. This re-applies the previous harden's changes, with the xargs split made sturdier than in that patch.
 
