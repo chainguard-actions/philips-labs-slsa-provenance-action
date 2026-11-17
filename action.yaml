@@ -52,24 +52,30 @@ runs:
       run: $GITHUB_ACTION_PATH/install-slsa-provenance.sh
       env:
         INSTALL_PATH: ${{ inputs.install-dir }}
+
     - name: Generate provenance
       shell: bash
       run: |
-        encoded_github="$(printf '%s' "${GITHUB_CONTEXT}" | base64 -w 0)"
-        encoded_runner="$(printf '%s' "${RUNNER_CONTEXT}" | base64 -w 0)"
+        encoded_github="$(printf '%s\n' "${GITHUB_CONTEXT}" | base64 -w 0)"
+        encoded_runner="$(printf '%s\n' "${RUNNER_CONTEXT}" | base64 -w 0)"
+
+        # quote-aware split, matching upstream's inline expression expansion
+        split_into_args() {
+          if [ -n "$1" ]; then
+            printf '%s' "$1" | xargs -r true >/dev/null   # fails on an unmatched quote
+            while IFS= read -r -d '' t; do args+=("$t"); done \
+              < <(printf '%s' "$1" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
+          fi
+        }
 
         args=()
-        args+=("${INPUT_COMMAND}")
-        args+=("${INPUT_SUBCOMMAND}")
+        split_into_args "${INPUT_COMMAND}"
+        split_into_args "${INPUT_SUBCOMMAND}"
         args+=(--github-context)
         args+=("${encoded_github}")
         args+=(--runner-context)
         args+=("${encoded_runner}")
-
-        if [ -n "${INPUT_ARGUMENTS}" ]; then
-          while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "${INPUT_ARGUMENTS}" | xargs printf '%s\0')
-        fi
+        split_into_args "${INPUT_ARGUMENTS}"
 
         "${INSTALL_PATH}/slsa-provenance" "${args[@]}"
       env:
